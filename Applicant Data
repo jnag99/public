@@ -1,0 +1,44 @@
+
+/*Query will pull basic data concerning an applicant.
+enrollment_path will indicate whether we requested documents from an applicant: 
+If they are "AUTO" Anything, then we did not request documents. 
+ */
+
+SELECT dup.customer_id, 
+dup.user_ref AS simple_uuid, 
+fcap.applied_ts AS date_time_applied, 
+CASE WHEN fcap.outcome = 'ACTIVE' THEN 'AUTO-ENROLLED'
+WHEN fcap.outcome = 'REJECTED' THEN 'AUTO-REJECTED' 
+WHEN fcap.outcome = 'IDV' THEN 'DOCUMENT(S) REQUESTED'
+ELSE 'NOT RECORDED' END AS enrollement_path,
+dup.username,
+duep.email,
+dup.full_name AS application_name, 
+fcap.address1 AS application_address_1,
+fcap.address2 AS application_address_2,
+fcap.city AS application_city, 
+fcap.state AS application_state, 
+fcap.postal_code AS application_zip,
+fcap.phone AS application_phone,
+fcap.ip_address AS application_ip,
+fcap.address_duplicate_count,
+fcap.phone_duplicate_count,
+dup.application_client,
+dup.application_os_type,
+dup.application_device_type,
+fcap.idology_codes,
+fcap.socure_codes,
+fcap.socure_fraud_score
+FROM curated.TABLE1 dup
+JOIN curated.TABLE2 fua ON dup.user_ref = fua.user_ref
+JOIN curated.TABLE3 dap ON fua.account_ref = dap.account_ref
+JOIN curated.TABLE4 duep ON dup.user_ref = duep.user_ref
+JOIN curated.TABLE5 fcap ON dup.user_ref = fcap.user_ref
+/* either of the three references below can be used to get applicant data. 
+account_number will only work if applicant was able to open an account
+customer_id and user_ref will work whether or not account was opened 
+uncomment desired reference line to search*/
+--WHERE dap.account_number = ''
+--WHERE dup.customer_id = ''
+--WHERE dup.user_ref = ''
+;
