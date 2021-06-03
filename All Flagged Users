@@ -1,0 +1,147 @@
+DROP TABLE IF EXISTS all_flagged;
+CREATE TEMP TABLE all_flagged AS (
+WITH customer_accounts as (
+  select
+    da.primary_user_ref as user_ref,
+    da.account_ref,
+    da.account_number,
+    da.type,
+    da.account_id,
+    nvl((ab.cr_balance-ab.dr_balance), 0) as account_balance,
+		LISTAGG(DISTINCT dug.group_name, ', ') WITHIN GROUP (ORDER BY group_name) AS groups
+  from curated.TABLE1 da
+	JOIN TABLE2 cca ON da.account_id = cca.account_id
+	LEFT JOIN curated.dim_user_group dug ON da.primary_user_ref = dug.user_ref
+  LEFT JOIN TABLE4 ab ON da.account_id = ab.account_id
+    AND ab.journal_id = 1 --'GL'
+    AND ab.layer_id = 1000 --'LEDGER'
+  WHERE da.primary_user_ref IN 
+	(SELECT DISTINCT dug.user_ref FROM curated.TABLE3 dug WHERE dug.group_name in 
+	('FLAG 1'
+	,'FLAG 2'
+	,'FLAG3' ...))
+    AND da.account_type IN ('CHECKING', 'PROTECTED')
+		AND cca.status != 'CLOSED'
+),
+
+flagged_accounts AS (
+select
+  ca.user_ref                                                               as user_ref,
+  sum(ca.account_balance)                                                   as total_balance,
+  max(case when ca.type = 'INDIVIDUAL_CHECKING' then account_ref end)       as indie_checking_account_ref,
+  max(case when ca.type = 'INDIVIDUAL_CHECKING' then account_number end)    as indie_checking_account_number,
+  sum(case when ca.type = 'INDIVIDUAL_CHECKING' then account_balance end)   as indie_checking_account_balance,
+  max(case when ca.type = 'SHARED_CHECKING' then account_ref end)           as shared_checking_account_ref,
+  max(case when ca.type = 'SHARED_CHECKING' then account_number end)        as shared_checking_account_number,
+  sum(case when ca.type = 'SHARED_CHECKING' then account_balance end)       as shared_checking_account_balance,
+  max(case when ca.type = 'INDIVIDUAL_PROTECTED' then account_ref end)      as indie_protected_account_ref,
+  max(case when ca.type = 'INDIVIDUAL_PROTECTED' then account_number end)   as indie_protected_account_number,
+  sum(case when ca.type = 'INDIVIDUAL_PROTECTED' then account_balance end)  as indie_protected_account_balance,
+  max(case when ca.type = 'SHARED_PROTECTED' then account_ref end)          as shared_protected_account_ref,
+  max(case when ca.type = 'SHARED_PROTECTED' then account_number end)       as shared_protected_account_number,
+  sum(case when ca.type = 'SHARED_PROTECTED' then account_balance end)      as shared_protected_account_balance--,
+	from customer_accounts ca
+	group by 1
+	order by 1
+	),
+
+external_transfer AS (
+    SELECT DISTINCT user_id AS user_ref, 'PENDING' AS ach
+    FROM analytics.current_nacho_account_transfer
+    WHERE status IN ('PROCESSING', 'PENDING', 'CANCELLING')
+		),
+		
+open_dispute AS (
+    SELECT DISTINCT new_customer_uuid_c AS user_ref, 'PENDING' AS dispute
+    FROM segment_salesforce.cases cases
+    WHERE record_type_lookup_c = 'Disputes & Potential Fraud'
+    AND status != 'Closed'
+		),
+		
+dormancy AS (
+	SELECT fa.user_ref, ccba.number AS account_number, ccba.is_dormant 
+	FROM fraud_accounts fa
+	JOIN curated.fact_user_account fua ON fa.user_ref = fua.user_ref
+	JOIN curated.dim_account_pii dap ON fua.account_ref = dap.account_ref
+	JOIN analytics.current_cartesian_bank_accounts ccba ON dap.account_id = ccba.account_id
+	WHERE ccba.is_dormant IS TRUE
+	)
+	
+SELECT DISTINCT
+ca.user_ref,
+ca.groups,
+fa.total_balance,
+fa.indie_checking_account_ref,
+fa.indie_checking_account_balance,
+fa.indie_checking_account_number,
+fa.shared_checking_account_balance,
+fa.shared_checking_account_ref,
+fa.shared_checking_account_number,
+fa.indie_protected_account_balance,
+fa.indie_protected_account_ref,
+fa.indie_protected_account_number,
+fa.shared_protected_account_balance,
+fa.shared_protected_account_ref,
+fa.shared_protected_account_number,
+nvl(fa.indie_checking_account_balance, 0) + nvl(fa.indie_protected_account_balance, 0) AS indie_balance,
+nvl(fa.shared_checking_account_balance, 0) + nvl(fa.shared_protected_account_balance, 0) AS shared_balance,
+et.ach, 
+od.dispute 
+FROM customer_accounts ca
+JOIN flagged_accounts fa ON ca.user_ref = fa.user_ref
+LEFT JOIN external_transfer et ON fa.user_ref = et.user_ref
+LEFT JOIN open_dispute od ON fa.user_ref = od.user_ref
+ORDER BY 1
+);
+
+--RESULT 1 EVERYTHING
+SELECT DISTINCT
+a.user_ref,
+a.total_balance,
+a.indie_checking_account_ref,
+a.indie_checking_account_balance,
+a.indie_checking_account_number,
+a.shared_checking_account_balance,
+a.shared_checking_account_ref,
+a.shared_checking_account_number,
+a.indie_protected_account_balance,
+a.indie_protected_account_ref,
+a.indie_protected_account_number,
+a.shared_protected_account_balance,
+a.shared_protected_account_ref,
+a.shared_protected_account_number,
+a.indie_balance,
+a.shared_balance,
+a.ach, 
+a.dispute 
+FROM all_flagged a
+ORDER BY 1
+;
+
+--RESULT 2 CLOSURE ELIGIBLE
+SELECT DISTINCT
+a.user_ref,
+a.total_balance,
+a.indie_checking_account_ref,
+a.indie_checking_account_balance,
+a.indie_checking_account_number,
+a.shared_checking_account_balance,
+a.shared_checking_account_ref,
+a.shared_checking_account_number,
+a.indie_protected_account_balance,
+a.indie_protected_account_ref,
+a.indie_protected_account_number,
+a.shared_protected_account_balance,
+a.shared_protected_account_ref,
+a.shared_protected_account_number,
+a.indie_balance,
+a.shared_balance,
+a.ach, 
+a.dispute 
+FROM all_flagged a
+WHERE (a.indie_checking_account_balance BETWEEN 0 AND 1 OR a.indie_checking_account_balance IS NULL)
+AND (a.shared_checking_account_balance BETWEEN 0 AND 1 OR a.shared_checking_account_balance IS NULL)
+AND (a.indie_protected_account_balance BETWEEN 0 AND 1 OR a.indie_protected_account_balance IS NULL)
+AND (a.shared_protected_account_balance BETWEEN 0 AND 1 OR a.shared_protected_account_balance IS NULL)
+ORDER BY 1
+;
